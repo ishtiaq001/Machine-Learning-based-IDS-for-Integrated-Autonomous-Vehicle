@@ -1,58 +1,77 @@
 import os
-import pandas as pd
 import numpy as np
-from sklearn.preprocessing import StandardScaler, LabelEncoder
+import pandas as pd
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder, OneHotEncoder
 
-def load_and_merge_nsl_cse(nsl_path, cse_folder, label_col='label', categorical_cols=None, test_size=0.3):
-    """
-    Load NSL-KDD and CSE-CIC-IDS2018 datasets and merge them safely using chunked reading for CSE.
-    """
-    # -------------------------
-    # Load NSL-KDD
-    # -------------------------
-    nsl_data = pd.read_csv(nsl_path)
+# --------------------------------------------------
+# Helper: encode categorical columns safely
+# --------------------------------------------------
+def encode_categorical(df, categorical_cols):
+    df = df.copy()
+    df = pd.get_dummies(df, columns=categorical_cols)
+    return df
 
-    # -------------------------
-    # Load CSE-CIC-IDS2018 in chunks
-    # -------------------------
-    cse_files = [os.path.join(cse_folder, f) for f in os.listdir(cse_folder) if f.endswith(".csv")]
-    cse_chunks = []
-    for file in cse_files:
-        print(f"Processing CSE file: {file}")
-        for chunk in pd.read_csv(file, chunksize=50000):  # load 50k rows at a time
-            cse_chunks.append(chunk)
-    cse_data = pd.concat(cse_chunks, ignore_index=True)
-    del cse_chunks  # free memory
 
-    # -------------------------
-    # Merge NSL + CSE
-    # -------------------------
-    print("Merging NSL-KDD and CSE-CIC-IDS2018...")
-    full_data = pd.concat([nsl_data, cse_data], ignore_index=True)
-    del nsl_data, cse_data  # free memory
+# ==================================================
+# NSL-KDD Loader (FIXED)
+# ==================================================
+def load_nsl(file_path, categorical_cols=None):
+    col_names = [
+        'duration','protocol_type','service','flag','src_bytes','dst_bytes',
+        'land','wrong_fragment','urgent','hot','num_failed_logins','logged_in',
+        'num_compromised','root_shell','su_attempted','num_root',
+        'num_file_creations','num_shells','num_access_files',
+        'num_outbound_cmds','is_host_login','is_guest_login','count',
+        'srv_count','serror_rate','srv_serror_rate','rerror_rate',
+        'srv_rerror_rate','same_srv_rate','diff_srv_rate',
+        'srv_diff_host_rate','dst_host_count','dst_host_srv_count',
+        'dst_host_same_srv_rate','dst_host_diff_srv_rate',
+        'dst_host_same_src_port_rate','dst_host_srv_diff_host_rate',
+        'dst_host_serror_rate','dst_host_srv_serror_rate',
+        'dst_host_rerror_rate','dst_host_srv_rerror_rate',
+        'label'
+    ]
 
-    # -------------------------
-    # Encode categorical columns
-    # -------------------------
+    df = pd.read_csv(file_path, names=col_names)
+    print("NSL-KDD loaded:", df.shape)
+
+    y = df['label']
+    X = df.drop(columns=['label'])
+
+    # encode categorical columns BEFORE float conversion
     if categorical_cols:
-        for col in categorical_cols:
-            if col in full_data.columns:
-                le = LabelEncoder()
-                full_data[col] = le.fit_transform(full_data[col].astype(str))
+        X = encode_categorical(X, categorical_cols)
 
-    # -------------------------
-    # Split features and labels
-    # -------------------------
-    X = full_data.drop(label_col, axis=1).values.astype(np.float32)
-    y = full_data[label_col].values
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=42, stratify=y)
+    # Convert everything to float safely
+    X = X.apply(pd.to_numeric, errors='coerce').fillna(0)
+    X = X.values.astype(np.float32)
 
-    # -------------------------
-    # Standardize
-    # -------------------------
-    scaler = StandardScaler()
-    X_train = scaler.fit_transform(X_train)
-    X_test = scaler.transform(X_test)
+    return train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
 
-    return X_train, X_test, y_train, y_test
+
+# ==================================================
+# CSE-CIC-IDS2018 Loader (FIXED)
+# ==================================================
+def load_cse(folder_path, categorical_cols=None):
+    csv_files = [f for f in os.listdir(folder_path) if f.endswith(".csv")]
+
+    df_list = []
+    for f in csv_files:
+        df_list.append(pd.read_csv(os.path.join(folder_path, f)))
+
+    df = pd.concat(df_list, ignore_index=True)
+    print("CSE-CIC-IDS2018 loaded:", df.shape)
+
+    y = df['Label']
+    X = df.drop(columns=['Label'])
+
+    # Handle categorical columns if any
+    if categorical_cols:
+        existing = [c for c in categorical_cols if c in X.columns]
+        X = encode_categorical(X, existing)
+
+    X = X.apply(pd.to_numeric, errors='coerce').fillna(0)
+    X = X.values.astype(np.float32)
+
+    return train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
