@@ -1,7 +1,6 @@
 import os
 import numpy as np
 import torch
-from torch_geometric.data import Data
 from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 
@@ -21,7 +20,6 @@ cse_folder = os.path.join(cwd, "CSE-CIC-IDS2018")
 
 categorical_cols = ['protocol_type', 'service', 'flag']
 
-
 # --------------------------
 # Utility: Encode labels safely
 # --------------------------
@@ -31,14 +29,13 @@ def encode_labels(y_train, y_test):
     y_test_enc = le.transform(y_test)
     return y_train_enc, y_test_enc, le
 
-
 # --------------------------
 # Function to run full pipeline
 # --------------------------
 def run_pipeline(X_train, X_test, y_train, y_test, dataset_name="Dataset"):
     print(f"\n===== Running pipeline for {dataset_name} =====")
 
-    # Encode labels (CRITICAL for XGBoost & NN)
+    # Encode labels
     y_train, y_test, label_encoder = encode_labels(y_train, y_test)
     num_classes = len(np.unique(y_train))
 
@@ -49,8 +46,9 @@ def run_pipeline(X_train, X_test, y_train, y_test, dataset_name="Dataset"):
 
     resnet_model = build_resnet(X_train.shape[1], num_classes)
     resnet_model.fit(
-        X_train, y_train,
-        epochs=10,
+        X_train,
+        y_train,
+        epochs=30,           # enough for convergence
         batch_size=128,
         validation_split=0.1,
         verbose=1
@@ -59,20 +57,38 @@ def run_pipeline(X_train, X_test, y_train, y_test, dataset_name="Dataset"):
     # ----------------------
     # Unsupervised branch
     # ----------------------
-    autoencoder, encoder_model = train_autoencoder(X_train, encoding_dim=32)
-    X_encoded_train = encoder_model.predict(X_train, verbose=0)
-    gmm_model = train_gmm(X_encoded_train, n_components=num_classes)
+    autoencoder, encoder_model, scaler = train_autoencoder(
+        X_train,
+        encoding_dim=64,
+        epochs=50,
+        batch_size=64
+    )
+
+    # Scale train and test for latent encoding
+    X_encoded_train = encoder_model.predict(scaler.transform(X_train), verbose=0)
+    X_encoded_test  = encoder_model.predict(scaler.transform(X_test), verbose=0)
+
+    gmm_model = train_gmm(
+        X_encoded_train,
+        n_components=num_classes
+    )
 
     # ----------------------
     # Semi-supervised branch (GNN)
     # ----------------------
-    graph_data = create_graph_data(X_train, y_train)
-    gnn_model = train_gnn(graph_data, X_train.shape[1], num_classes)
+    graph_data = create_graph_data(X_encoded_train, y_train)
+    gnn_model = train_gnn(
+        graph_data,
+        input_dim=X_encoded_train.shape[1],
+        num_classes=num_classes,
+        epochs=50,
+        lr=0.005
+    )
 
     # ----------------------
     # RL branch
     # ----------------------
-    rl_model = train_rl(X_train, y_train)
+    rl_model = train_rl(X_train, y_train, timesteps=20000)
 
     # ----------------------
     # Meta-feature training
@@ -89,9 +105,7 @@ def run_pipeline(X_train, X_test, y_train, y_test, dataset_name="Dataset"):
     for i in range(len(X_train)):
         rl_preds[i, rl_model.predict(X_train[i].reshape(1, -1))[0]] = 1
 
-    meta_features = build_meta_features(
-        [xgb_preds, resnet_preds, gmm_preds, gnn_preds, rl_preds]
-    )
+    meta_features = build_meta_features([xgb_preds, resnet_preds, gmm_preds, gnn_preds, rl_preds])
     meta_learner = train_meta_learner(meta_features, y_train)
 
     # ----------------------
@@ -99,14 +113,9 @@ def run_pipeline(X_train, X_test, y_train, y_test, dataset_name="Dataset"):
     # ----------------------
     xgb_preds_test = xgb_model.predict_proba(X_test)
     resnet_preds_test = resnet_model.predict(X_test, verbose=0)
-    X_encoded_test = encoder_model.predict(X_test, verbose=0)
     gmm_preds_test = gmm_model.predict_proba(X_encoded_test)
 
-    graph_data_test = Data(
-        x=torch.tensor(X_test, dtype=torch.float),
-        edge_index=graph_data.edge_index
-    )
-
+    graph_data_test = create_graph_data(X_encoded_test, y_test)
     with torch.no_grad():
         gnn_preds_test = torch.exp(gnn_model(graph_data_test)).numpy()
 
@@ -114,9 +123,13 @@ def run_pipeline(X_train, X_test, y_train, y_test, dataset_name="Dataset"):
     for i in range(len(X_test)):
         rl_preds_test[i, rl_model.predict(X_test[i].reshape(1, -1))[0]] = 1
 
-    meta_features_test = build_meta_features(
-        [xgb_preds_test, resnet_preds_test, gmm_preds_test, gnn_preds_test, rl_preds_test]
-    )
+    meta_features_test = build_meta_features([
+        xgb_preds_test,
+        resnet_preds_test,
+        gmm_preds_test,
+        gnn_preds_test,
+        rl_preds_test
+    ])
 
     final_preds = meta_learner.predict(meta_features_test)
 
@@ -137,14 +150,7 @@ X_train_nsl, X_test_nsl, y_train_nsl, y_test_nsl = load_nsl(
     nsl_train_file,
     categorical_cols=categorical_cols
 )
-
-run_pipeline(
-    X_train_nsl,
-    X_test_nsl,
-    y_train_nsl,
-    y_test_nsl,
-    dataset_name="NSL-KDD"
-)
+run_pipeline(X_train_nsl, X_test_nsl, y_train_nsl, y_test_nsl, dataset_name="NSL-KDD")
 
 # ==========================================================
 # Run CSE-CIC-IDS2018
@@ -153,11 +159,4 @@ X_train_cse, X_test_cse, y_train_cse, y_test_cse = load_cse(
     cse_folder,
     categorical_cols=categorical_cols
 )
-
-run_pipeline(
-    X_train_cse,
-    X_test_cse,
-    y_train_cse,
-    y_test_cse,
-    dataset_name="CSE-CIC-IDS2018"
-)
+run_pipeline(X_train_cse, X_test_cse, y_train_cse, y_test_cse, dataset_name="CSE-CIC-IDS2018")
