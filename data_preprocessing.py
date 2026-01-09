@@ -75,3 +75,4 @@ def load_cse(folder_path, categorical_cols=None):
     X = X.values.astype(np.float32)
 
     return train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+
