@@ -48,7 +48,7 @@ def run_pipeline(X_train, X_test, y_train, y_test, dataset_name="Dataset"):
     resnet_model.fit(
         X_train,
         y_train,
-        epochs=30,           # enough for convergence
+        epochs=1000,           # enough for convergence
         batch_size=128,
         validation_split=0.1,
         verbose=1
@@ -60,7 +60,7 @@ def run_pipeline(X_train, X_test, y_train, y_test, dataset_name="Dataset"):
     autoencoder, encoder_model, scaler = train_autoencoder(
         X_train,
         encoding_dim=64,
-        epochs=50,
+        epochs=1000,
         batch_size=64
     )
 
@@ -81,7 +81,7 @@ def run_pipeline(X_train, X_test, y_train, y_test, dataset_name="Dataset"):
         graph_data,
         input_dim=X_encoded_train.shape[1],
         num_classes=num_classes,
-        epochs=50,
+        epochs=1000,
         lr=0.005
     )
 
@@ -160,3 +160,4 @@ X_train_cse, X_test_cse, y_train_cse, y_test_cse = load_cse(
     categorical_cols=categorical_cols
 )
 run_pipeline(X_train_cse, X_test_cse, y_train_cse, y_test_cse, dataset_name="CSE-CIC-IDS2018")
+
